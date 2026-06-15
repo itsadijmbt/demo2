@@ -1,133 +1,97 @@
-"""Vanilla MCP client for the snowflake-mcp DEMO.
+"""Vanilla MCP client -- HTTP version.
 
+Talks to the ALREADY-RUNNING upstream Snowflake-Labs server over streamable-HTTP,
+so the requests show up on the SERVER side (handshake + tool calls on :9000).
 
-Layout expected on disk:
-    ./snowflake-mcp-upstream/                            (git clone)
-    ./snowflake-mcp-upstream/services/configuration.yaml (ships in clone)
+Difference from normal-client.py: that one spawns its OWN stdio server; THIS one
+connects to the live HTTP server you started separately.
+
+Both destructive calls are ACCEPTED -- vanilla = no MAPL, no identity, no audit.
+Contrast with macaw-client.py (SecureMCP: deny + attestation).
+
+Run:
+    # Terminal 1 (in snowflake-mcp-upstream/):
+    python run-mock-http.py
+    # Terminal 2 (here):
+    python normal-client-http.py
 """
 
 import asyncio
 import sys
-from pathlib import Path
 
 from mcp import ClientSession
-from mcp.client.stdio import stdio_client, StdioServerParameters
+from mcp.client.streamable_http import streamablehttp_client
+
+import _pretty as P
+
+URL = "http://127.0.0.1:9000/mcp"
 
 
-HERE = Path(__file__).resolve().parent
-UPSTREAM = HERE / "snowflake-mcp-upstream"
-
-INLINE_SERVER = r"""
-import sys
-from unittest.mock import MagicMock
-
-import snowflake.connector
-snowflake.connector.connect = lambda **kw: MagicMock(name="MockSnowflakeConnection")
-
-import snowflake.core
-snowflake.core.Root = lambda conn: MagicMock(name="MockSnowflakeRoot")
-
-from mcp_server_snowflake.server import main
-main()
-"""
-
-
-SEP = "=" * 64
-
-
-def render(result) -> str:
+def render_content(result):
     if result is None:
         return "(no result)"
-    parts = [
-        getattr(b, "text", repr(b))
-        for b in (getattr(result, "content", []) or [])
-    ]
+    parts = [getattr(b, "text", repr(b)) for b in (getattr(result, "content", []) or [])]
     return "\n".join(parts) if parts else repr(result)
 
 
-async def run_test(session, label, tool, args):
-    print(f"\n[{label}] {tool} {args}")
+async def run_test(session, idx, title, subtitle, tool, args):
+    P.test_box(idx, title, subtitle, accent=P.YELLOW)
+    P.call_summary(tool, args)
     try:
         r = await session.call_tool(tool, args)
-        is_err = getattr(r, "isError", False)
-        print(f"  isError: {is_err}")
-        for line in render(r).splitlines():
-            print(f"  {line}")
-        if not is_err:
-            print("  *** Server accepted the request. No MAPL deny.")
-            print("  *** No attestation prompt. No signed audit envelope.")
+        body = render_content(r)
+        if getattr(r, "isError", False):
+            P.denied("ERROR  (isError=True)")
+            P.result_body(body)
+            P.commentary(["Tool itself errored -- this was NOT a policy refusal."], kind="info")
+        else:
+            P.accepted("ACCEPTED  (isError=False)")
+            P.result_body(body)
+            P.commentary(
+                ["Server accepted the destructive call without question.",
+                 "No identity attached. No MAPL deny. No attestation prompt.",
+                 "No signed audit envelope was produced."],
+                kind="warn",
+            )
     except Exception as e:
-        print(f"  [Call raised: {type(e).__name__}: {e}]")
-        print("  Note: this is transport/SDK, not policy refusal.")
+        P.denied(f"CALL RAISED  ({type(e).__name__})")
+        P.result_body(str(e))
+        P.commentary(["Transport/SDK error -- is the :9000 server running?"], kind="info")
 
 
-async def main() -> int:
-    if not UPSTREAM.is_dir():
-        print(f"Expected upstream clone at: {UPSTREAM}", file=sys.stderr)
-        print("Run: git clone https://github.com/Snowflake-Labs/mcp.git "
-              "snowflake-mcp-upstream", file=sys.stderr)
-        return 2
+async def main():
+    P.banner("VANILLA MCP CLIENT  (HTTP)",
+             subtitle=f"-> {URL}   .   connects to the LIVE server, no MACAW",
+             accent=P.YELLOW)
+    try:
+        async with streamablehttp_client(URL) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
 
-    params = StdioServerParameters(
-        command=sys.executable,
-        args=[
-            "-c", INLINE_SERVER,
-            "--service-config-file", "services/configuration.yaml",
-        ],
-        cwd=str(UPSTREAM),
-    )
+                P.section("TOOLS ADVERTISED", accent=P.YELLOW)
+                tools = (await session.list_tools()).tools
+                P.tool_list(tools, columns=3, accent=P.YELLOW)
 
-    print(SEP)
-    print("VANILLA MCP CLIENT  ->  upstream Snowflake-Labs fastmcp server (mocked)")
-    print(SEP)
+                P.section("SNOWFLAKE-MCP TESTS  .  vanilla side", accent=P.YELLOW)
+                await run_test(
+                    session, 1,
+                    "drop_object(object_type=table, name=demo)",
+                    "expected: vanilla server accepts (no policy layer)",
+                    "drop_object",
+                    {"object_type": "table", "target_object": {"name": "demo"}})
+                await run_test(
+                    session, 2,
+                    'run_snowflake_query  .  "DROP TABLE customers"',
+                    "expected: vanilla server runs it (no policy, no attestation)",
+                    "run_snowflake_query",
+                    {"statement": "DROP TABLE customers"})
+    except Exception as e:
+        print(f"\n  Could not connect to {URL}: {e}", file=sys.stderr)
+        print("  Start the server first:  (in snowflake-mcp-upstream/)  python run-mock-http.py",
+              file=sys.stderr)
+        return 1
 
-    async with stdio_client(params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-
-            print("\n" + SEP)
-            print("TOOLS ADVERTISED")
-            print(SEP)
-            tools = (await session.list_tools()).tools
-            for t in tools:
-                print(f"  - {t.name}")
-
-            print("\n" + SEP)
-            print("SNOWFLAKE-MCP RED-TEAM POLICY TESTS  (vanilla side)")
-            print(SEP)
-
-        
-            await run_test(
-                session,
-                "TEST 1 drop_object(table=demo)  "
-                "(no MAPL -- expect server to attempt it)",
-                "drop_object",
-                {"object_type": "table",
-                 "target_object": {"name": "demo"}},
-            )
-
-            await run_test(
-                session,
-                "TEST 2 run_snowflake_query w/ 'DROP' literal  "
-                "(no attestation primitive -- expect server to run it)",
-                "run_snowflake_query",
-                {"statement": "SELECT 'pretend DROP' AS note"},
-            )
-
-            print("\n" + SEP)
-            print("CONTRAST WITH macaw-client.py")
-            print(SEP)
-            print(
-                "  TEST 1: vanilla server attempted drop_object; SecureMCP\n"
-                "          DENIED at the Local Agent (denied_resources).\n"
-                "  TEST 2: vanilla server ran the query; SecureMCP BLOCKED\n"
-                "          via the allow_destroy attestation gate (admin\n"
-                "          approval required).\n"
-                "  No signed audit envelope on either call here. No identity\n"
-                "  attached. Whoever ran this client is invisible to the\n"
-                "  server's record-keeping."
-            )
-
+    P.footer("vanilla HTTP demo complete  .  both destructive calls accepted", accent=P.YELLOW)
     return 0
 
 
@@ -135,5 +99,4 @@ if __name__ == "__main__":
     try:
         sys.exit(asyncio.run(main()))
     except KeyboardInterrupt:
-        print("\nInterrupted.")
         sys.exit(130)
