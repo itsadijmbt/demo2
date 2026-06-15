@@ -83,7 +83,8 @@ Role filter (allowed): `analyst`, `manager`, `admin`, `viewer` (case-insensitive
 ### Side A  Vanilla (no security)
 ```bash
 # Terminal 1   upstream server (mocked Snowflake) on :9000
-cd Demo-Client/snowflake-mcp-upstream && python run-mock-http.py
+cd Demo-Client/snowflake-mcp-upstream && python3 run-mock-http.py --service-config-file services/configuration.yaml
+
 
 # Terminal 2   plain MCP client
 cd Demo-Client && python normal-client.py
