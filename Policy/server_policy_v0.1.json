@@ -1,0 +1,74 @@
+{
+    "policy_id": "app:securemcp-snowflake-mcp",
+    "version": "0.1.0",
+    "description": "Snowflake MCP server.",
+
+    "resources": [
+        "tool:run_snowflake_query",
+        "tool:describe_object",
+        "tool:list_objects",
+        "tool:create_object",
+        "tool:create_or_alter_object",
+        "tool:list_semantic_views",
+        "tool:describe_semantic_view",
+        "tool:show_semantic_dimensions",
+        "tool:show_semantic_metrics",
+        "tool:get_semantic_view_ddl",
+        "tool:write_semantic_view_query_tool",
+        "tool:query_semantic_view",
+        "tool:cortex_search",
+        "tool:cortex_analyst",
+        "tool:cortex_agent"
+    ],
+
+    "denied_resources": [
+        "tool:drop_object"
+    ],
+
+    "attestations": [
+        "allow_destroy::{ params.statement MATCHES '*DROP*' OR params.statement MATCHES '*drop*' OR params.statement MATCHES '*TRUNCATE*' OR params.statement MATCHES '*truncate*' OR params.statement MATCHES '*DELETE*' OR params.statement MATCHES '*delete*' OR params.statement MATCHES '*ALTER*' OR params.statement MATCHES '*alter*' }",
+        "allow_privilege::{ params.statement MATCHES '*GRANT*' OR params.statement MATCHES '*grant*' OR params.statement MATCHES '*REVOKE*' OR params.statement MATCHES '*revoke*' OR params.statement MATCHES '*CREATE USER*' OR params.statement MATCHES '*create user*' OR params.statement MATCHES '*CREATE ROLE*' OR params.statement MATCHES '*create role*' OR params.object_type IN ('user', 'role') }"
+    ],
+
+    "constraints": {
+        "parameters": {
+            "tool:create_object": {
+                "object_type": {
+                    "type": "string",
+                    "allowed_values": ["table", "view", "schema"]
+                }
+            },
+            "tool:create_or_alter_object": {
+                "object_type": {
+                    "type": "string",
+                    "allowed_values": ["table", "view", "schema"]
+                }
+            },
+            "tool:list_objects": {
+                "object_type": {
+                    "type": "string",
+                    "allowed_values": ["table", "view", "schema", "stage", "warehouse", "database", "compute_pool", "role", "user", "image_repository"]
+                }
+            },
+            "tool:run_snowflake_query": {
+                "statement": {
+                    "type": "string",
+                    "min_length": 1,
+                    "max_length": 5000
+                }
+            }
+        },
+        "attestations": {
+            "allow_destroy": {
+                "approval_criteria": "role:manager",
+                "timeout": 300,
+                "one_time": true
+            },
+            "allow_privilege": {
+                "approval_criteria": "role:manager",
+                "timeout": 300,
+                "one_time": true
+            }
+        }
+    }
+}

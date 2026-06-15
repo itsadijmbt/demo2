@@ -1,0 +1,24 @@
+# Claims mapping for the snowflake attestation demo.
+# ONE provider entry (your earlier paste had 4 duplicate keys -> YAML keeps only
+# the last, so the others were silently dropped). All claim paths are namespaced
+# Auth0 custom claims and MUST have NO trailing spaces (a trailing space makes
+# MACAW look for a claim literally named ".../roles  " and never find roles ->
+# the manager would get NO role -> broken audit proof).
+
+identity_providers:
+  macaw_mcp_test_api:
+    name: "macaw-mcp-test-api (Test Application)"
+    type: "auth0"
+    detection:
+      iss_pattern: "*dev-5ntnefdmlsiwh7nv.us.auth0.com*"
+    mappings:
+      subject_path: "sub"
+      email_path: "email"
+      name_path: "name"
+      organization_path: "https://macaw.local/organization"
+      business_unit_path: "https://macaw.local/business_unit"
+      team_path: "https://macaw.local/team"
+      roles_path: "https://macaw.local/roles"
+    role_filter:
+      allowed: ["analyst", "manager", "admin", "viewer"]
+      case_sensitive: false

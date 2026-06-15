@@ -1,0 +1,108 @@
+==============================================================================
+ snowflake-mcp — setup & test bits  (red-team posture)
+==============================================================================
+ Server identity (verified: server.py:704)
+   SecureMCP("snowflake-mcp")  ->  app_name = securemcp-snowflake-mcp
+   policy_id must be:  app:securemcp-snowflake-mcp
+   Confirm against startup log: "Registered as agent: ...app:<X>:..."
+
+ *** SNOWFLAKE CANNOT RUN IN LOCAL DOCKER. ***
+ Two ways to run:
+   A) MOCK  (no creds) -> run-server-mock.py. Boots the server, registers all
+      tools, evaluates MAPL. Tool bodies that touch the DB return MagicMocks,
+      but the policy controls (denied_resources / allowed_values / resources)
+      are enforced on the mesh BEFORE the body -> they test cleanly.
+   B) REAL Snowflake -> regular entry point + real SNOWFLAKE_* creds.
+
+==============================================================================
+ 1. TOOL SURFACE (verified from @server.tool(name=...))
+==============================================================================
+ run_snowflake_query(statement)             READ+WRITE+DESTRUCTIVE  (has sqlglot AST guard)
+ create_object(object_type,target_object,mode)        WRITE/DDL
+ drop_object(object_type,target_object,if_exists)     DESTRUCTIVE/DDL
+ create_or_alter_object(object_type,target_object)    WRITE/DDL
+ describe_object / list_objects                       READ
+ cortex_agent / cortex_search / cortex_analyst        READ/compute (conditional reg.)
+ list/describe/show_* semantic, get_semantic_view_ddl READ
+ write_semantic_view_query_tool                       READ (returns SQL text; verified)
+ query_semantic_view                                  READ
+   object_type enum (10): database, schema, table, view, warehouse,
+                          compute_pool, role, stage, user, image_repository
+
+==============================================================================
+ 2. ENV  (mock: dummy values; mock intercepts snowflake.connector.connect)
+==============================================================================
+export SNOWFLAKE_ACCOUNT=mock-account
+export SNOWFLAKE_USER=mock-user
+export SNOWFLAKE_PASSWORD=mock-pass
+# REAL run: set these to your actual Snowflake account/user/password (or PAT).
+
+==============================================================================
+ 3. *** RED-TEAM HARDENING: tighten the SQL allow-list ***
+==============================================================================
+# services/configuration.yaml ships with sql_statement_permissions allowing
+# almost EVERYTHING (Drop/Delete/Truncate/Alter/Create/Insert/Update = True).
+# That makes run_snowflake_query's built-in sqlglot guard wide open.
+# As the red-team admin, restrict it to read-only BEFORE testing/prod:
+#   sql_statement_permissions:
+#     - Select: True
+#     - Describe: True
+#     - Command: True      # SHOW
+#     - Unknown: False
+#     # everything else (Drop/Delete/Truncate/Alter/Insert/Update/Create) -> False
+# This is the DETERMINISTIC SQL control; MAPL attestations are only checkpoints.
+
+==============================================================================
+ 4. PUBLISH THE POLICY
+==============================================================================
+# Runtime reads the REMOTE store (api.macawsecurity.ai), NOT the file.
+# Publish Policy/server_policy_v0.1.json keyed on policy_id
+# app:securemcp-snowflake-mcp (same channel as postgres/mysql).
+
+==============================================================================
+ 5. RUN THE SERVER (mock)
+==============================================================================
+cd <snowflake-mcp root>
+python3 run-server-mock.py --service-config-file services/configuration.yaml
+# Watch for: "Registered as agent: local:.../app:securemcp-snowflake-mcp:<id>"
+# (REAL run: use the project's normal entry point, e.g. python3 -m mcp_server_snowflake
+#  with real creds — see the repo README.)
+
+==============================================================================
+ 6. RUN THE CLIENT (single requester)
+==============================================================================
+python3 client.py "snowflake" snowflake-requester
+
+ Expected (mock):
+  TEST 1 list_objects(table)        -> ALLOW (read)
+  TEST 2 drop_object(table)         -> DENY  (denied_resources)          [destruction blocked]
+  TEST 3 create_object(USER)        -> DENY  (allowed_values object_type) [privesc blocked]
+  TEST 4 create_object(table)       -> ALLOW at policy (mock returns mock)
+  TEST 5 run_snowflake_query SEL 1  -> ALLOW (no attestation trigger)
+  TEST 6 run_snowflake_query 'DROP' -> BLOCKS on allow_destroy attestation
+                                       (no approver here -> waits to timeout 300s;
+                                        Ctrl-C to skip. To actually approve, run a
+                                        role:manager approver -- see note below.)
+
+ Note: tests 2 & 3 are the core red-team proofs and need NO approver -- they are
+ deterministic MAPL denials evaluated before the tool body. Test 6 is the
+ attestation CHECKPOINT (auth not enforced on 0.9.4 -- any user can approve;
+ see [[project_role_criteria_not_enforced]]). To test approval, copy the
+ mysql client-analyst.py pattern (MACAWClient + JWT) with a manager identity.
+
+==============================================================================
+ 7. VERIFIED ENFORCEMENT MAP (macaw_client 0.9.4)
+==============================================================================
+ resources / denied_resources (tool:<name>, no app name)   ENFORCED
+ parameters (allowed_values, pattern, min/max, *_length)   ENFORCED
+ conditional attestations (external, MATCHES, role:)        FIRES, but approval
+                                                            authorization NOT enforced
+ denied_parameters                                          NOT ENFORCED (omit)
+ nested params (params.target_object.name)                  NOT SUPPORTED (Appendix C future)
+
+ Red-team takeaway: lean on resources / denied_resources / allowed_values
+ (deterministic) for must-block; treat attestations as logged checkpoints only.
+
+==============================================================================
+ CLEANUP:  Ctrl-C the mock server. No docker container to remove.
+==============================================================================
